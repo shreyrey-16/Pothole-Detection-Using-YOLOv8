@@ -1,0 +1,19 @@
+# Training outputs
+runs/
+
+# Pretrained model
+yolov8n.pt
+
+# Demo output video
+opencv_video_output/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# VS Code
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db

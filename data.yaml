@@ -1,0 +1,15 @@
+path: C:/Users/hp/OneDrive/Desktop/COMPUTER VISION PROJECT
+
+train: ../train/images
+val: ../train/images
+
+
+nc: 1
+names: ['pothole']
+
+roboflow:
+  workspace: shreyas-workspace-kvqro
+  project: shreyas-workspace-kvqro
+  version: dataset
+  license: Private
+  url: https://app.roboflow.com/shreyas-workspace-kvqro/shreyas-workspace-kvqro/dataset

@@ -1,0 +1,299 @@
+import os
+import cv2
+import numpy as np
+from ultralytics import YOLO
+
+# ========================= USER SETTINGS =========================
+
+# Project root directory
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Dataset folder
+DATA_DIR = os.path.join(PROJECT_DIR, "train")
+
+# Demo video
+VIDEO_PATH = os.path.join(PROJECT_DIR, "pothole_video.mp4")
+
+# Training parameters
+EPOCHS = 10
+IMG_SIZE = 640
+BATCH_SIZE = 8
+
+# Detection settings
+CONF_THRESHOLD = 0.30
+BOX_COLOR = (0, 0, 255)        # Red bounding box (BGR)
+TEXT_COLOR = (255, 255, 255)   # White label text
+BOX_THICKNESS = 2
+FONT = cv2.FONT_HERSHEY_SIMPLEX
+FONT_SCALE = 0.6
+FONT_THICKNESS = 2
+
+# ================================================================
+
+
+def draw_detections(frame, results):
+    """
+    Draw bounding boxes and labels on a frame using OpenCV.
+    Returns the annotated frame and count of detections.
+    """
+    detection_count = 0
+
+    for result in results:
+        boxes = result.boxes
+        if boxes is None:
+            continue
+
+        for box in boxes:
+            conf = float(box.conf[0])
+            if conf < CONF_THRESHOLD:
+                continue
+
+            # Bounding box coordinates
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            cls_id = int(box.cls[0])
+            label = result.names.get(cls_id, f"class_{cls_id}")
+            display_text = f"{label}: {conf:.2f}"
+
+            # Draw rectangle
+            cv2.rectangle(frame, (x1, y1), (x2, y2), BOX_COLOR, BOX_THICKNESS)
+
+            # Draw label background
+            (text_w, text_h), baseline = cv2.getTextSize(
+                display_text, FONT, FONT_SCALE, FONT_THICKNESS
+            )
+            cv2.rectangle(
+                frame,
+                (x1, y1 - text_h - baseline - 4),
+                (x1 + text_w + 4, y1),
+                BOX_COLOR,
+                -1  # filled
+            )
+
+            # Draw label text
+            cv2.putText(
+                frame,
+                display_text,
+                (x1 + 2, y1 - baseline - 2),
+                FONT,
+                FONT_SCALE,
+                TEXT_COLOR,
+                FONT_THICKNESS,
+                cv2.LINE_AA
+            )
+
+            detection_count += 1
+
+    return frame, detection_count
+
+
+def draw_overlay(frame, frame_num, total_frames, detection_count):
+    """
+    Draw a HUD overlay showing frame number and pothole count.
+    """
+    h, w = frame.shape[:2]
+
+    # Semi-transparent top banner
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (0, 0), (w, 40), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.5, frame, 0.5, 0, frame)
+
+    progress_text = f"Frame: {frame_num}/{total_frames}"
+    count_text = f"Potholes Detected: {detection_count}"
+
+    cv2.putText(frame, progress_text, (10, 28), FONT, 0.65,
+                (200, 200, 200), 1, cv2.LINE_AA)
+    cv2.putText(frame, count_text, (w - 260, 28), FONT, 0.65,
+                (0, 255, 100), 2, cv2.LINE_AA)
+
+    return frame
+
+
+def train_model(data_yaml):
+    """
+    Load YOLOv8n and train on the given dataset.
+    Returns the path to the best weights file.
+    """
+    print("\n📦 Loading YOLOv8n pretrained model...")
+    model = YOLO("yolov8n.pt")
+
+    print("\n🚀 Starting YOLO training...")
+    model.train(
+        data=data_yaml,
+        epochs=EPOCHS,
+        imgsz=IMG_SIZE,
+        batch=BATCH_SIZE,
+    )
+
+    try:
+        save_dir = model.trainer.save_dir
+    except Exception:
+        save_dir = os.path.join("runs", "detect", "train")
+
+    best_weights = os.path.join(save_dir, "weights", "best.pt")
+    print("\n🎉 Training completed!")
+    print("📁 Best model saved at:", best_weights)
+    return best_weights
+
+
+def predict_on_images(model, pred_source):
+    """
+    Run YOLO prediction on validation images using OpenCV for saving results.
+    """
+    output_dir = os.path.join("runs", "opencv_image_predictions")
+    os.makedirs(output_dir, exist_ok=True)
+
+    image_files = [
+        f for f in os.listdir(pred_source)
+        if f.lower().endswith((".jpg", ".jpeg", ".png", ".bmp"))
+    ]
+
+    if not image_files:
+        print("⚠️ No image files found in:", pred_source)
+        return
+
+    print(f"\n🔍 Running prediction on {len(image_files)} validation images...")
+
+    for img_file in image_files:
+        img_path = os.path.join(pred_source, img_file)
+
+        # Read image with OpenCV
+        frame = cv2.imread(img_path)
+        if frame is None:
+            print(f"  ⚠️ Could not read: {img_file}")
+            continue
+
+        # Resize for model input while preserving aspect ratio
+        resized = cv2.resize(frame, (IMG_SIZE, IMG_SIZE))
+
+        # Run inference
+        results = model.predict(source=resized, imgsz=IMG_SIZE,
+                                conf=CONF_THRESHOLD, verbose=False)
+
+        # Draw detections using OpenCV
+        annotated, count = draw_detections(resized, results)
+
+        # Save result
+        out_path = os.path.join(output_dir, img_file)
+        cv2.imwrite(out_path, annotated)
+        print(f"  ✅ {img_file} → {count} pothole(s) detected")
+
+    print(f"\n📁 Predicted images saved at: {output_dir}")
+
+
+def detect_on_video(model, video_path):
+    """
+    Run pothole detection on a video frame-by-frame using OpenCV.
+    Saves an annotated output video.
+    """
+    cap = cv2.VideoCapture(video_path)
+
+    if not cap.isOpened():
+        print(f"❌ Could not open video: {video_path}")
+        return
+
+    # Video properties
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    print(f"\n🎥 Video Info: {orig_w}x{orig_h} | {fps:.1f} FPS | {total_frames} frames")
+
+    # Output video setup
+    output_dir = os.path.join("runs", "opencv_video_output")
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, "pothole_detected.mp4")
+
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(output_path, fourcc, fps, (orig_w, orig_h))
+
+    frame_num = 0
+    total_potholes = 0
+
+    print(f"\n🔄 Processing video... (this may take a while)")
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        frame_num += 1
+
+        # Run YOLO inference on the frame
+        results = model.predict(source=frame, imgsz=IMG_SIZE,
+                                conf=CONF_THRESHOLD, verbose=False)
+
+        # Draw bounding boxes with OpenCV
+        annotated_frame, count = draw_detections(frame.copy(), results)
+        total_potholes += count
+
+        # Draw HUD overlay
+        annotated_frame = draw_overlay(
+            annotated_frame, frame_num, total_frames, count
+        )
+
+        # Write to output video
+        writer.write(annotated_frame)
+
+        # Print progress every 30 frames
+        if frame_num % 30 == 0 or frame_num == total_frames:
+            pct = (frame_num / total_frames) * 100 if total_frames > 0 else 0
+            print(f"  📽️  {frame_num}/{total_frames} frames ({pct:.1f}%) | "
+                  f"Potholes this frame: {count}")
+
+    # Cleanup
+    cap.release()
+    writer.release()
+
+    print(f"\n🎬 Output video saved at: {output_path}")
+    print(f"📊 Total pothole detections across all frames: {total_potholes}")
+
+
+def main():
+
+    # ------------------ VALIDATE DATASET ------------------
+    data_yaml = os.path.join(DATA_DIR, "data.yaml")
+
+    if not os.path.exists(data_yaml):
+        raise FileNotFoundError(
+            f"❌ data.yaml NOT FOUND at:\n{data_yaml}\n"
+            "Check your DATA_DIR path."
+        )
+
+    print("✅ Using dataset:", data_yaml)
+
+    # ------------------ TRAIN MODEL ------------------
+    best_weights = train_model(data_yaml)
+
+    # ------------------ LOAD TRAINED MODEL ------------------
+    print("\n📦 Loading trained model for predictions...")
+    model = YOLO(best_weights)
+
+    # ------------------ VALIDATION (IMAGE PREDICTIONS) ------------------
+    valid_folders = [
+        os.path.join(DATA_DIR, "valid", "images"),
+        os.path.join(DATA_DIR, "val", "images")
+    ]
+
+    pred_source = None
+    for folder in valid_folders:
+        if os.path.isdir(folder):
+            pred_source = folder
+            break
+
+    if pred_source is None:
+        print("⚠️ No valid/val images folder found. Skipping image prediction.")
+    else:
+        predict_on_images(model, pred_source)
+
+    # ------------------ VIDEO DETECTION ------------------
+    if VIDEO_PATH and os.path.exists(VIDEO_PATH):
+        detect_on_video(model, VIDEO_PATH)
+    else:
+        print("\n⚠️ Video path not found. Skipping video detection.")
+
+    print("\n✅ ALL TASKS COMPLETE.")
+
+
+if __name__ == "__main__":
+    main()
