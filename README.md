@@ -138,11 +138,8 @@ Example output video:
 
 ```
 runs/opencv_video_output/pothole_detected.mp4
+
 ```
-
-*(A GIF or screenshot from the output video can be added here.)*
-
----
 
 ## 📁 Project Structure
 
